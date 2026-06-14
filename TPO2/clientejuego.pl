@@ -2,6 +2,32 @@
 
 :- use_module(library(http/websocket)).
 
+%-----------------------------------
+%   DEFINICION DE CARTAS
+%---------------------------------
+%palo
+palo(oro).
+palo(copa).
+palo(espada).
+palo(basto).
+
+% defino las cartas 
+numero(12).
+numero(11).
+numero(10).
+numero(7).
+numero(6).
+numero(5).
+numero(4).
+numero(3).
+numero(2).
+numero(1).
+
+%defino carta numero y palo
+carta(S-N):-
+    numero(S),
+    palo(N).
+
 main :-
     format("Ingresa tu nombre: "),
     read(Nombre),
@@ -32,9 +58,11 @@ procesar_mensaje(Stream, Message) :-
 manejar_turno(Stream) :-
     format("¡Es tu turno!~n", []),
     ws_receive(Stream, Opciones, [format(prolog)]),
-    format("Opciones disponibles: ~w~n", [Opciones.data]),
+    format("Mensaje: ~w~n", [Opciones]),
+    Opciones.data = cartas(Cartas),
+    format("Opciones disponibles: ~w~n", [Cartas]),
     format("Elige una opción: "),
-    read(Eleccion),
-    ws_send(Stream, prolog(Eleccion)),
-    format("Jugada enviada: ~w~n", [Eleccion]),
+    read(CartaJugada),
+    ws_send(Stream, prolog(carta(CartaJugada))),
+    format("Jugada enviada: ~p~n", [CartaJugada]),
     escuchar_mensajes(Stream).

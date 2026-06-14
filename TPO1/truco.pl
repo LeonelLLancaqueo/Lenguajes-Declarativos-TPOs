@@ -1,9 +1,20 @@
 :- use_module(library(clpfd)).
-
 :- use_module(library(lists)).
 :- use_module(library(random)).
 
-% -------- TRUCO -------------
+
+:- use_module(library(http/thread_httpd)).
+:- use_module(library(http/http_dispatch)).
+:- use_module(library(http/http_error)).
+:- use_module(library(http/html_write)).
+
+:- use_module(library(http/websocket)).
+
+
+
+%-----------------------------------
+%   DEFINICION DE CARTAS
+%---------------------------------
 %palo
 palo(oro).
 palo(copa).
@@ -46,21 +57,32 @@ puntos_truco(6-_, 3).
 puntos_truco(5-_, 2).
 puntos_truco(4-_, 1).
 
-%% cargo en el estado el conjunto de cartas posibles como lista
+% defino predicado para obtener los puntos de una carta de truco.
+puntos_carta_truco(X,N):-
+    carta(X),
+    puntos_truco(X,N).
+
+
+:- dynamic socket/1.
+
+
+
+%---------------------------------------------
+%           INICIO DEL JUEGO
+%--------------------------------------------
+
+%defino los estados que atraviersa el juego como una gramatica los cuales pueden ser consumidor y transformados
+estado(S), [S] --> [S].
+estado(S0, S), [S] --> [S0].
+
+
 reiniciar -->
+% este predicado genera el mazo de cartas creando un conjunto de las cartas posibles y lo denomina "maso" 
     estado(_, [mazo(Cartas)]),
     {
 	setof(Carta, carta(Carta), Cartas)
     }.
 
-% phrase(reiniciar, [_], [Estado]).
-
-
-%phrase(
-%       mezclar_cartas,
-%       [[mazo([1-oro, 2-copa, 3-espada])]],
-%       [Estado]
-%   ).
 mezclar_cartas -->
     estado(S0, S),
     {
@@ -78,28 +100,17 @@ mezclar(Xs0, [Y|Ys]) :-
     mezclar(Xs, Ys).
 
 
-% [players([player(Name, PlayableCards, WonCards), player(Name, PlayableCards, WonCards), ...]), stock(Cards), trump(Trump)]
-
-puntos_carta_truco(X,N):-
-    carta(X),
-    puntos_truco(X,N).
-
-
-%defino los estados que atraviersa el juego
-estado(S), [S] --> [S].
-estado(S0, S), [S] --> [S0].
 
 
 
-% si uno gana la mano empieza en la siguiente ronda
+%-----------------------------------------
+%   CREACION DE JUGADORES
+%--------------------------------------------
 
-%defino las 3 manos
+% creo un jugador vacio: jugador(nombre,cartas,cartas_ganadas)
+crear_jugador(N, jugador(N, ,[], [])).
 
-% crear jugador- turno - mezclar cartas - repartir - jugar  
-% jugador (nombre, cartas, mano_ganadas)
-crear_jugador(N, jugador(N, [], [])).
-
-crear_jugadores(Nombres) -->
+crear_jugadores() -->
     estado(S0, S),
     {
 	same_length(Jugadores, Nombres), % misma cantidad jugadores que nombres
@@ -107,6 +118,11 @@ crear_jugadores(Nombres) -->
 	S = [jugadores(Jugadores)|S0] % siguente estado con jugadores
     }.
     
+%------------------------------------------
+%   REPARTO DE CARTAS
+%---------------------------------------------
+
+% separo la baraja de cartas de la creacion de jugador para desacoplar el codigo
 barajar_rondas -->      
     barajar_a_jugador,
 	barajar_a_jugador,
@@ -128,26 +144,16 @@ barajar_a_jugador([P|Ps], [P1|Ps1], [C|Cs], Cs1) :-
     P1 = jugador(N, [C|A0], B0), % jugador nuevo estado con una carta mas sacada del mazo.
     barajar_a_jugador(Ps, Ps1, Cs, Cs1).
 
-%%phrase(
-%%       (
-%%           reiniciar,
-%%           mezclar_cartas,
-%%           crear_jugadores([leonel, daniela]),
-%%       	 barajar_rondas
-%%       ),
-%%       [[]],
-%%       [Estado]
-%%   ).
 
-
-%% DIVIDIR EN 3 RONDAS||  1 JUGADOR JUEGA UNA CARTA -> 1 JUGADOR GANA -> ASIGNO PUNTO --> MEZCLA --> SIGUIE SIGUIENTE RONDA --> MIENTRAS 2 RONDAS
-
-
+%-----------------------------------------------------------------
+%                    JUGAR RONDAS
+%-----------------------------------------------------------------
 jugadores(P0, P), [S] -->
     [S0],
     { select(jugadores(P0), S0, S1), S = [jugadores(P)|S1] }.
 
-jugar_rondas -->  %% CORREGIR _ DEFINIR RESTRICCION DE QUE NINGUN JUGADOR GANO MAS DE 1 MANO
+jugar_rondas --> 
+% este predicado consulta si la lista de cartas_ganadoras es mayor a 1 en tal caso no se juegan mas rondas
 	jugadores(P, P),
     { P = [jugador(_, _, X)|_], length(X, N), N > 1}. %% un jugador gano mas de una mano   
 jugar_rondas -->
@@ -189,21 +195,30 @@ jugar_jugadores([P|Ps], [C|Cs]) --> % lista de jugadores
     },
     jugar_jugadores(Ps, Cs).
 
+%-----------------------------------------------------------------
+%                       DETERMINAR GANADOR RONDA
+%-----------------------------------------------------------------
+carta_ganadora(C1,C2):-
+% este predicado comprueba si los puntos de la primer carta es mayor a la segunda carta pasada por parametro. 
+    puntos_carta_truco(C1, Puntos1),
+    puntos_carta_truco(C2, Puntos2),
+    Puntos1 > Puntos2. 
+
 mejor_carta(X, Y, Z) :-
+%este predicado toma la carta del jugador mano y la compara con la de su rival en termino de sus puntos, se retorna en Z la carta ganadora, 
+%en caso de empate de puntos gana el jugador mano 
     ( carta_ganadora(X, Y) ->
         Z = X;
         Z = Y
     ).
 ganador_ronda(Cartas, WinnerCard) :-
+% este predicado recorre las cartas jugadas por cada jugador y calcula la carta ganadora
     reverse(Cartas, [FirstCard|RestCards]),
     foldl(mejor_carta, RestCards, FirstCard, WinnerCard).
 
-carta_ganadora(C1,C2):-
-    puntos_carta_truco(C1, Puntos1),
-    puntos_carta_truco(C2, Puntos2),
-    Puntos1 > Puntos2. 
-
-
+%--------------------------------
+%          MOSTRAR PUNTOS 
+%-----------------------------------
 mostrar_puntos -->
     jugadores(P, P),
     {

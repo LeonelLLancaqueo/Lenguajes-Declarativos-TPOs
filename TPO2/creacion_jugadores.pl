@@ -54,6 +54,13 @@ puntos_truco(6-_, 3).
 puntos_truco(5-_, 2).
 puntos_truco(4-_, 1).
 
+
+% defino predicado para obtener los puntos de una carta de truco.
+puntos_carta_truco(X,N):-
+    carta(X),
+    puntos_truco(X,N).
+
+
 %---------------------------------------------
 %           INICIO DEL JUEGO
 %--------------------------------------------
@@ -103,6 +110,7 @@ mezclar(Xs0, [Y|Ys]) :-
 :- dynamic(juego/1).
 
 procesar_jugador(WebSocket) :-
+    format("Cliente WebSocket conectado~n", []),
     ws_receive(WebSocket, Message, [format(prolog)]),
     format("Recibido: ~w~n", [Message]),
     (   Message.data = join(Nombre) ->
@@ -152,7 +160,7 @@ barajar_a_jugador([JugadorIn|JugadoresIn], [JugadorOut|JugadoresOut], [Carta|Car
 %-----------------------------------
 :- dynamic(jugadores/1).
 :- dynamic(juego/1).
-
+:- dynamic(mano/4).
 
 main :-
     http_server(http_dispatch, [port(8316)]),
@@ -174,104 +182,137 @@ verificar_inicio :-
     !,
     assertz(juego(iniciado)),
     format("Iniciando juego con ~w jugadores~n", [2]),
-    iniciar_rondas.
+    iniciar_rondas(Lista).
     
 
 verificar_inicio :-
     jugadores(Lista),
-    forall(member(jugador(_,_,_,WS), Lista), 
+    forall(member(jugador(_,_,_,_,WS), Lista), 
            ws_send(WS, text("Esperando más jugadores..."))).
 
-mantener_activo :-
+mantener_activo:-
     (   juego(terminado) ->
         format("Hilo terminando para websocket~n", [])
-    ;   
+    ;
+    sleep(4),   
 	mantener_activo
     ).
     
 iniciar_rondas(Jugadores) :-
     reiniciar,
     mezclar_cartas,
-    barajar_rondas
-    forall(member(jugador(_,_,_,_ WS), Jugadores),
+    barajar_rondas,
+    jugadores(JugadoresConCartas),
+    forall(member(jugador(_,_,_,_,WS), Jugadores),
            ws_send(WS, text("¡Juego iniciado!"))),
-    jugar_rondas(Jugadores, 1, 3). % 2 rondas
+    jugar_rondas(JugadoresConCartas, 1, 3). % 2 rondas.
 
 jugar_rondas(Jugadores, Ronda, MaxRondas) :-
-    Ronda > MaxRondas,
+    Ronda > MaxRondas;
+    Jugadores= [jugador(_,_,_,X,_)|_], length(X, N), N > 1,
     !,
     format("Juego terminado~n", []),
     % Notificar a todos los jugadores y cerrar conexiones
-    forall(member(jugador(_,_,_,_ WS), Jugadores),
+    forall(member(jugador(_,_,_,_,WS), Jugadores),
            ws_send(WS, text("¡Juego terminado!"))
             ),
     assertz(juego(terminado)).
 
 
 
-
 jugar_rondas(Jugadores, Ronda, MaxRondas) :-
     format("=== Ronda ~w ===~n", [Ronda]),
-    forall(member(jugador(_,_,_ WS), Jugadores),
+    forall(member(jugador(_,_,_,_, WS), Jugadores),
            (atom_concat('Ronda ', Ronda, MsgRonda),
             ws_send(WS, text(MsgRonda)))),
-    procesar_turnos(Jugadores, Ronda, CartasSelec),
-    
-
-    ganadorRonda(CartasSelec, WinnerCard),
-    maplist(quitar_carta, Jugadores, Cartas, JugadoresNext),
-    nth0(N, Cartas, WinnerCard),
+    procesar_turnos(Jugadores, CartasSelec, Ronda),
+    format("Jugadores: ~w~n", [Jugadores]),
+    format("Cartas seleccionadas: ~w~n", [CartasSelec]),
+    ganador_ronda(CartasSelec, WinnerCard),
+    format("Mejor carta: ~w~n", [WinnerCard]),
+    maplist(quitar_carta, Jugadores, CartasSelec, JugadoresNext),
+    format("Jugadores Next: ~w~n", [JugadoresNext]),
+    nth0(N, CartasSelec, WinnerCard),
 	nth0(N, JugadoresNext, WinnerPlayer0),
+
     append(PBefore, [WinnerPlayer0|PAfter], JugadoresNext),
-    WinnerPlayer0 = jugador(WinnerName, Cartas,CartasJugadas,CartasWin, Socket),
-    append([jugador(WinnerName, C, W1)|PAfter], PBefore, JugadoresFinal),
-    retractAll(jugadores(Lista)),
-    assert(jugadores(JugadoresFinal)),
-    format("Winner card is ~w from ~w~n", [WinnerCard, WinnerName])
+	WinnerPlayer0 = jugador(WinnerName, Cartas, CartasJugadas, CartasWin,Socket),
+	append(CartasWin,[WinnerCard], CartasWinFinal),
+	append([jugador(WinnerName, Cartas, CartasJugadas, CartasWinFinal,Socket)|PAfter], PBefore, JugadoresFinal),
+
+    %agregar_carta_win(WinnerCard, WinnerPlayer0, WinnerPlayer),
+    %nth0(N, JugadoresFinal, WinnerPlayer, JugadoresNext),
+
+    %retractall(jugadores(_)),
+    %assertz(jugadores(JugadoresFinal)),
+
+    %WinnerPlayer = jugador(WinnerName, _, _, _, _),
+    format("Winner card is ~w from ~w~n", [WinnerCard, WinnerName]),
 
     SigRonda is Ronda + 1,
-    jugar_rondas(JugadoresNext, SigRonda, MaxRondas).
+    jugar_rondas(JugadoresFinal, SigRonda, MaxRondas).
 
-procesar_turnos([], Ronda, CartasSelec):-
+
+
+quitar_carta(JugadorIn, CartaJugada, JugadorOut) :-
+    JugadorIn = jugador(Nombre, Cartas, CartasJugadas, CartasWin, WebSocket),
+    select(CartaJugada, Cartas, CartasOut),
+    JugadorOut = jugador(Nombre, CartasOut, [CartaJugada|CartasJugadas], CartasWin, WebSocket).
+
+procesar_turnos([],[], Ronda ):-
     format("Todos los jugadores han jugado en ronda ~w~n", [Ronda]).
 
-quitar_carta(JugadorIn, CartasJugadasRonda, JugadorOut) :-
-    JugadorIn = jugador(Nombre, Cartas, CartasJugadas ,CartasWin, WebSocket),
-    select(CartasJugadaRonda, Cartas, CartasOut),
-    member(CartaJugada,CartasJugadaRonda),
-    JugadorOut = jugador(Nombre, CartasOut, [CartaJugada|CartasJugadas],CartasWin, WebSocket).
-
-procesar_turnos([jugador(Nombre,Cartas,CartasWin,WS)|Resto],[CartaSelec|CartasSelec] ,Ronda) :-
+procesar_turnos([jugador(Nombre,Cartas,_,_,WS)|Resto],[CartaSelec|CartasSelec] ,Ronda) :-
     format("Turno de ~w en ronda ~w~n", [Nombre, Ronda]),
     % Notificar a todos
     jugadores(TodosJugadores),
     atom_concat('Turno de ', Nombre, MsgTurno),
-    forall(member(jugador(_,_,_ WSAll), TodosJugadores),
+    forall(member(jugador(_,_,_,_,WSAll), TodosJugadores),
            ws_send(WSAll, text(MsgTurno))),
     % Pedir jugada al jugador actual con multiples intentos
     ws_send(WS, text("tu_turno")),
-    ws_send(WS, prolog(Cartas)),
+    ws_send(WS, prolog(cartas(Cartas))),
+
+    %Opciones
+    %  Cartas
+    %  truco
     
-    %ws_send(WS, prolog([opcion1, opcion2, opcion3])),
+    % Si canto truco 
     
     % Recibir respuesta con timeout mas corto y reintentos
     ws_receive(WS, Respuesta, [format(prolog)]),
-    CartaSelec= Respuesta.data,
-    member(CartaSelec,Cartas),
+    Respuesta.data = carta(CartaSelec),
+    % Respuesta.data = truco(truco);
+    % Respuesta.data = truco(retruco);
+    % Respuesta.data = truco(vale_cuatro);
+    
+    member(CartaSelec, Cartas),
     format("~w jugó: ~w~n", [Nombre, CartaSelec]),
-
     % Notificar la jugada a todos con manejo de errores
     format(atom(MsgJugada), "~w eligió ~w", [Nombre, CartaSelec]),
-    forall(member(jugador(_, WSAll), TodosJugadores),
+    forall(member(jugador(_,_,_,_,WSAll), TodosJugadores),
 	   catch(ws_send(WSAll, text(MsgJugada)), _, true)),
-
     procesar_turnos(Resto, CartasSelec, Ronda).
-
-
+/*
+procesar_mensaje(Stream, Message) :-
+    (   Message.data = carta(CartaSelec) ->
+        manejar_turno(Stream)
+    ;   Message.data = truco(truco) ->
+        format("~w~n", [Message.data]),
+        format("Desconectando...~n", []),
+        ws_close(Stream, 1000, "Cliente terminando")
+    ;   Message.opcode == close ->
+        format("Conexión cerrada por el servidor~n", [])
+    ;   
+        format("Mensaje: ~w~n", [Message]),
+        escuchar_mensajes(Stream)
+    ).
+*/
 
 %%  -----------------------
 %%  ESTO IRIA EN EL CLIENTE
 %%  ---------------------- 
+/*
 jugar_jugadores([], []) --> [].
 jugar_jugadores([P|Ps], [C|Cs]) --> % lista de jugadores
     {
@@ -282,7 +323,7 @@ jugar_jugadores([P|Ps], [C|Cs]) --> % lista de jugadores
 	member(C, SelectableCards)
     },
     jugar_jugadores(Ps, Cs).
-
+*/
 
 %-----------------------------------------------------------------
 %                       DETERMINAR GANADOR RONDA
@@ -296,7 +337,7 @@ carta_ganadora(Carta1,Carta2):-
 mejor_carta(X, Y, Z) :-
 %este predicado toma la carta del jugador mano y la compara con la de su rival en termino de sus puntos, se retorna en Z la carta ganadora, 
 %en caso de empate de puntos gana el jugador mano 
-    ( carta_ganadora(X, Y,) ->
+    ( carta_ganadora(X, Y) ->
         Z = X;
         Z = Y
     ).
